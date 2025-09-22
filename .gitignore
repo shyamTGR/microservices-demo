@@ -26,3 +26,27 @@ obj/
 pkg/
 release/wi-kubernetes-manifests.yaml
 vendor/
+
+# Security: Ignore files with exposed API keys
+scripts/verify_database_init.py
+scripts/verify-db-job.yaml
+scripts/simple-init-job.yaml
+scripts/cloud_shell_direct_init.py
+scripts/database-init-job.yaml
+scripts/direct-psycopg2-init-job.yaml
+scripts/fixed-alloydb-init-job.yaml
+scripts/run_on_vm.sh
+kustomize/components/shopping-assistant/shoppingassistantservice.yaml
+
+# Security: Ignore any files that might contain API keys or secrets
+**/secrets.yaml
+**/secrets.yml
+**/*secret*.yaml
+**/*secret*.yml
+**/*key*.yaml
+**/*key*.yml
+**/*api-key*
+**/*apikey*
+.env
+.env.*
+!.env.example
