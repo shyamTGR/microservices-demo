@@ -1,0 +1,138 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: final-integration-test
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: test
+        image: python:3.12-slim
+        command: ["python3", "-c"]
+        args:
+        - |
+          import requests
+          import json
+          import time
+          import logging
+          
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+          
+          # Install requests if needed
+          import subprocess
+          subprocess.run(["pip", "install", "requests"], check=True)
+          
+          # Test configuration
+          SHOPPING_ASSISTANT_URL = "http://shoppingassistantservice:80/"
+          
+          def create_test_image():
+              return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+          
+          def test_service_connectivity():
+              logger.info("Testing Shopping Assistant service connectivity...")
+              
+              try:
+                  payload = {
+                      "message": "test connectivity",
+                      "image": create_test_image()
+                  }
+                  
+                  response = requests.post(
+                      SHOPPING_ASSISTANT_URL,
+                      json=payload,
+                      timeout=30,
+                      headers={"Content-Type": "application/json"}
+                  )
+                  
+                  logger.info(f"Response status: {response.status_code}")
+                  
+                  if response.status_code == 200:
+                      result = response.json()
+                      content = result.get("content", "")
+                      logger.info("✅ Shopping Assistant service is working!")
+                      logger.info(f"Response preview: {content[:200]}...")
+                      return True
+                  else:
+                      logger.error(f"❌ Service returned error: {response.status_code}")
+                      logger.error(f"Response: {response.text}")
+                      
+                      # Check if it's a database issue
+                      if "vector" in response.text.lower() or "operator does not exist" in response.text.lower():
+                          logger.error("🔍 Database initialization required - vector extension not available")
+                      
+                      return False
+                      
+              except requests.exceptions.Timeout:
+                  logger.error("❌ Request timed out")
+                  return False
+              except Exception as e:
+                  logger.error(f"❌ Test failed: {e}")
+                  return False
+          
+          def test_frontend_integration():
+              logger.info("Testing frontend integration...")
+              
+              # Test that the service endpoint is accessible from within the cluster
+              # This simulates what the frontend would do
+              
+              test_cases = [
+                  "I need stylish accessories",
+                  "Show me home decor items", 
+                  "I want clothing for summer"
+              ]
+              
+              for i, message in enumerate(test_cases, 1):
+                  logger.info(f"Test {i}: {message}")
+                  
+                  try:
+                      payload = {
+                          "message": message,
+                          "image": create_test_image()
+                      }
+                      
+                      response = requests.post(
+                          SHOPPING_ASSISTANT_URL,
+                          json=payload,
+                          timeout=45
+                      )
+                      
+                      if response.status_code == 200:
+                          result = response.json()
+                          content = result.get("content", "")
+                          logger.info(f"✅ Test {i} successful")
+                          
+                          # Check for product IDs
+                          if "[" in content and "]" in content:
+                              logger.info(f"✅ Product IDs found in response")
+                          else:
+                              logger.warning(f"⚠️ No product IDs in response")
+                              
+                      else:
+                          logger.error(f"❌ Test {i} failed: {response.status_code}")
+                          
+                  except Exception as e:
+                      logger.error(f"❌ Test {i} error: {e}")
+                  
+                  time.sleep(2)
+          
+          # Run tests
+          logger.info("🚀 Starting Frontend Integration Tests")
+          
+          if test_service_connectivity():
+              test_frontend_integration()
+              logger.info("🎉 Frontend integration tests completed!")
+          else:
+              logger.error("❌ Service connectivity failed - database may need initialization")
+              logger.info("💡 Next steps:")
+              logger.info("1. Initialize AlloyDB using Cloud Shell script")
+              logger.info("2. Re-run this test")
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+  backoffLimit: 1

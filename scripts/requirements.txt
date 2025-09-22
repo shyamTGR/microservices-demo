@@ -1,0 +1,5 @@
+# Requirements for AlloyDB initialization and population scripts
+# Use psycopg2-binary with a version that works better on Windows
+psycopg2-binary>=2.9.0,<3.0.0
+google-cloud-secret-manager>=2.20.0
+langchain-google-genai>=2.1.0

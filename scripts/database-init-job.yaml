@@ -1,0 +1,222 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: alloydb-init-job
+spec:
+  template:
+    spec:
+      serviceAccountName: shoppingassistantservice
+      restartPolicy: Never
+      containers:
+      - name: init
+        image: gcr.io/wise-karma-472219-r2/shoppingassistantservice:fixed-v2
+        command: ["python3", "-c"]
+        args:
+        - |
+          import os
+          import sys
+          import asyncio
+          import logging
+          from google.cloud import secretmanager
+          from google.cloud.alloydb.connector import Connector
+          import asyncpg
+          
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+          
+          # Product data
+          PRODUCTS = [
+              {
+                  "id": "OLJCESPC7Z",
+                  "name": "Sunglasses",
+                  "description": "Add a modern touch to your outfits with these sleek aviator sunglasses.",
+                  "picture": "/static/img/products/sunglasses.jpg",
+                  "price": 19.99,
+                  "categories": ["accessories"]
+              },
+              {
+                  "id": "66VCHSJNUP",
+                  "name": "Tank Top",
+                  "description": "Perfectly cropped cotton tank, with a scooped neckline.",
+                  "picture": "/static/img/products/tank-top.jpg",
+                  "price": 18.99,
+                  "categories": ["clothing", "tops"]
+              },
+              {
+                  "id": "1YMWWN1N4O",
+                  "name": "Watch",
+                  "description": "This gold-tone stainless steel watch will work with most of your outfits.",
+                  "picture": "/static/img/products/watch.jpg",
+                  "price": 109.99,
+                  "categories": ["accessories"]
+              },
+              {
+                  "id": "L9ECAV7KIM",
+                  "name": "Loafers",
+                  "description": "A neat addition to your summer wardrobe.",
+                  "picture": "/static/img/products/loafers.jpg",
+                  "price": 89.99,
+                  "categories": ["footwear"]
+              },
+              {
+                  "id": "2ZYFJ3GM2N",
+                  "name": "Hairdryer",
+                  "description": "This lightweight hairdryer has 3 heat and speed settings. It's perfect for travel.",
+                  "picture": "/static/img/products/hairdryer.jpg",
+                  "price": 24.99,
+                  "categories": ["hair", "beauty"]
+              },
+              {
+                  "id": "0PUK6V6EV0",
+                  "name": "Candle Holder",
+                  "description": "This small but intricate candle holder is an excellent gift.",
+                  "picture": "/static/img/products/candle-holder.jpg",
+                  "price": 18.99,
+                  "categories": ["decor", "home"]
+              },
+              {
+                  "id": "LS4PSXUNUM",
+                  "name": "Salt & Pepper Shakers",
+                  "description": "Add some flavor to your kitchen.",
+                  "picture": "/static/img/products/salt-and-pepper-shakers.jpg",
+                  "price": 18.99,
+                  "categories": ["kitchen", "home"]
+              },
+              {
+                  "id": "9SIQT8TOJO",
+                  "name": "Vintage Typewriter",
+                  "description": "This typewriter looks good in your living room.",
+                  "picture": "/static/img/products/typewriter.jpg",
+                  "price": 67.99,
+                  "categories": ["vintage", "decor", "home"]
+              },
+              {
+                  "id": "6E92ZMYYFZ",
+                  "name": "Film Camera",
+                  "description": "This camera looks like it's a few decades old but it's actually brand new.",
+                  "picture": "/static/img/products/film-camera.jpg",
+                  "price": 2245.00,
+                  "categories": ["photography", "vintage"]
+              }
+          ]
+          
+          async def init_db():
+              project_id = os.environ["PROJECT_ID"]
+              region = os.environ["REGION"]
+              cluster_name = os.environ["ALLOYDB_CLUSTER_NAME"]
+              instance_name = os.environ["ALLOYDB_INSTANCE_NAME"]
+              database_name = os.environ["ALLOYDB_DATABASE_NAME"]
+              table_name = os.environ["ALLOYDB_TABLE_NAME"]
+              secret_name = os.environ["ALLOYDB_SECRET_NAME"]
+              
+              logger.info("Getting password from Secret Manager...")
+              client = secretmanager.SecretManagerServiceClient()
+              secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+              response = client.access_secret_version(request={"name": secret_path})
+              password = response.payload.data.decode("UTF-8")
+              
+              connector = Connector()
+              instance_connection_string = f"projects/{project_id}/locations/{region}/clusters/{cluster_name}/instances/{instance_name}"
+              
+              # Create database
+              logger.info("Creating products database...")
+              conn = await connector.connect_async(
+                  instance_connection_string,
+                  "asyncpg",
+                  user="postgres",
+                  password=password,
+                  db="postgres"
+              )
+              
+              try:
+                  await conn.execute("CREATE DATABASE products")
+                  logger.info("✅ Database created")
+              except Exception as e:
+                  if "already exists" in str(e):
+                      logger.info("✅ Database exists")
+                  else:
+                      raise e
+              await conn.close()
+              
+              # Setup schema
+              logger.info("Setting up schema...")
+              conn = await connector.connect_async(
+                  instance_connection_string,
+                  "asyncpg",
+                  user="postgres",
+                  password=password,
+                  db=database_name
+              )
+              
+              await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+              
+              await conn.execute(f"""
+                  CREATE TABLE IF NOT EXISTS {table_name} (
+                      id VARCHAR PRIMARY KEY,
+                      name VARCHAR NOT NULL,
+                      description TEXT NOT NULL,
+                      categories TEXT[],
+                      price_usd DECIMAL(10,2),
+                      picture VARCHAR,
+                      product_embedding VECTOR(768)
+                  )
+              """)
+              
+              # Generate embeddings using Gemini
+              from langchain_google_genai import GoogleGenerativeAIEmbeddings
+              embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+              
+              logger.info("Populating products...")
+              for product in PRODUCTS:
+                  logger.info(f"Processing {product['name']}...")
+                  
+                  # Generate embedding
+                  embedding = embeddings.embed_query(product["description"])
+                  
+                  await conn.execute(f"""
+                      INSERT INTO {table_name} (id, name, description, categories, price_usd, picture, product_embedding)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7)
+                      ON CONFLICT (id) DO UPDATE SET
+                          name = EXCLUDED.name,
+                          description = EXCLUDED.description,
+                          categories = EXCLUDED.categories,
+                          price_usd = EXCLUDED.price_usd,
+                          picture = EXCLUDED.picture,
+                          product_embedding = EXCLUDED.product_embedding
+                  """, product["id"], product["name"], product["description"], 
+                       product["categories"], product["price"], product["picture"], embedding)
+              
+              count = await conn.fetchval(f"SELECT COUNT(*) FROM {table_name}")
+              logger.info(f"✅ Initialized with {count} products")
+              
+              await conn.close()
+              await connector.close_async()
+              
+              logger.info("🎉 Database initialization complete!")
+          
+          asyncio.run(init_db())
+        env:
+        - name: GOOGLE_API_KEY
+          value: AIzaSyCjvgLUncC4iVQlff_CwUXmAihYDvqEW74
+        - name: ALLOYDB_CLUSTER_NAME
+          value: onlineboutique-cluster
+        - name: ALLOYDB_INSTANCE_NAME
+          value: onlineboutique-instance
+        - name: ALLOYDB_DATABASE_NAME
+          value: products
+        - name: ALLOYDB_TABLE_NAME
+          value: catalog_items
+        - name: ALLOYDB_SECRET_NAME
+          value: alloydb-secret
+        - name: PROJECT_ID
+          value: wise-karma-472219-r2
+        - name: REGION
+          value: us-central1
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 100m
+            memory: 256Mi
+  backoffLimit: 3
